@@ -1,0 +1,25 @@
+1.rank_feature中去除与old_item_cf相关的参数：
+DEBUG: 0.42687167767897066, 0.25597934986007437, 0.5622981767598987,
+加入与old_item_cf相关的参数之后
+DEBUG: 0.42061205226290427, 0.25142663155977585, 0.5531819762531671,
+说明去除与old_item_cf相关参数对效果更好(仅为线下效果好，线上暂时没有验证)
+2.线上得分 0.2920
+(1)recall.py当中加入共现矩阵，权重为
+weights = {'old_itemcf': 0.2, 'itemcf': 0.8, 'binetwork': 1, 'w2v': 0.1 , 'hot': 0}
+(2)rank_feature中加入特征：
+##old_item_cf相关
+if mode == 'valid':
+    f = open('/home/xiaoguzai/数据/新闻推荐/user_data/sim/offline/old_itemcf_sim.pkl', 'rb')
+    article_vec_map = pickle.load(f)
+    f.close()
+else:
+    f = open('/home/xiaoguzai/数据/新闻推荐/user_data/sim/offline/old_itemcf_sim.pkl', 'rb')
+    article_vec_map = pickle.load(f)
+    f.close()
+
+df_feature['user_last_click_article_old_itemcf_sim'] = df_feature[[
+    'user_id', 'article_id'
+]].parallel_apply(func_old_itemcf_last_sim, axis=1)
+df_feature['user_click_article_old_itemcf_sim_sum_2'] = df_feature[[
+    'user_id', 'article_id'
+]].parallel_apply(lambda x: func_old_itemcf_sum(x, 2), axis=1)

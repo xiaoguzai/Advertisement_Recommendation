@@ -1,0 +1,246 @@
+import argparse
+import math
+import os
+import pickle
+import random
+import signal
+from collections import defaultdict
+from random import shuffle
+
+import multitasking
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
+from utils import Logger, evaluate
+
+max_threads = multitasking.config['CPU_CORES']
+multitasking.set_max_threads(max_threads)
+multitasking.set_engine('process')
+signal.signal(signal.SIGINT, multitasking.killall)
+
+random.seed(2020)
+
+# 命令行参数
+r"""
+parser = argparse.ArgumentParser(description='itemcf 召回')
+parser.add_argument('--mode', default='valid')
+parser.add_argument('--logfile', default='test.log')
+
+args = parser.parse_args()
+
+mode = args.mode
+logfile = args.logfile
+"""
+mode = 'valid'
+logfile = 'logdata'
+# 初始化日志
+# 0.3333498931889314
+os.makedirs('/home/xiaoguzai/数据/新闻推荐/user_data/log', exist_ok=True)
+log = Logger(f'/home/xiaoguzai/数据/新闻推荐/user_data/log/{logfile}').logger
+log.info(f'itemcf 召回，mode: {mode}')
+
+def get_user_item_time(click_df):
+
+    click_df = click_df.sort_values('click_timestamp')
+
+    def make_item_time_pair(df):
+        return list(zip(df['click_article_id'], df['click_timestamp']))
+
+    user_item_time_df = click_df.groupby('user_id')['click_article_id', 'click_timestamp'].apply(
+        lambda x: make_item_time_pair(x)) \
+        .reset_index().rename(columns={0: 'item_time_list'})
+    # 这里apply构成了'item_time_list'中的键值对：[(df['click_article_id']1,df['click_timestamp']1),(df['click_article_id']2,df['click_timestamp']2),......]
+    user_item_time_dict = dict(zip(user_item_time_df['user_id'], user_item_time_df['item_time_list']))
+    # 这里dict构成了第二组键值对：'user_id':[(df['click_article_id']1,df['click_timestamp']1),(df['click_article_id']2,df['click_timestamp']2),......]
+
+    return user_item_time_dict
+
+def cal_sim(df):
+    user_item_ = df.groupby('user_id')['click_article_id'].agg(
+        lambda x: list(x)).reset_index()
+    user_item_dict = dict(
+        zip(user_item_['user_id'], user_item_['click_article_id']))
+    user_item1_ = df.groupby('user_id')['click_timestamp'].agg(
+        lambda x: list(x)).reset_index()
+    user_time_dict = dict(
+        zip(user_item1_['user_id'], user_item1_['click_timestamp'])
+    )
+    user_item_time_dict = get_user_item_time(df)
+
+    item_cnt = defaultdict(int)
+    sim_dict = {}
+    r"""
+    for user, item_time_list in tqdm(user_item_time_dict.items()):
+        for _, data1 in enumerate(item_time_list):
+            item = 
+            item_cnt[item] += 1
+            sim_dict.setdefault(item, {})
+
+            for current_data in enumerate(item_time_list):
+                relate_item = current_data[0]
+                if item == relate_item:
+                    continue
+
+                sim_dict[item].setdefault(relate_item, 0)
+
+                sim_dict[item][relate_item] += 1 / math.log(len(item_click_time) + 1)
+
+    for item, relate_items in tqdm(sim_dict.items()):
+        for relate_item, cij in relate_items.items():
+            sim_dict[item][relate_item] = cij / \
+                math.sqrt(item_cnt[item] * item_cnt[relate_item])
+    """
+    item_cnt = defaultdict(int)
+    for user, item_time_list in tqdm(user_item_time_dict.items()):
+        # 在基于商品的协同过滤优化的时候可以考虑时间因素
+        for i, i_click_time in item_time_list:
+            item_cnt[i] += 1
+            sim_dict.setdefault(i, {})
+            for j, j_click_time in item_time_list:
+                if (i == j):
+                    continue
+                sim_dict[i].setdefault(j, 0)
+
+                sim_dict[i][j] += 1 / math.log(len(item_time_list) + 1)
+
+    for i, related_items in sim_dict.items():
+        for j, wij in related_items.items():
+            sim_dict[i][j] = wij / math.sqrt(item_cnt[i] * item_cnt[j])
+
+    return sim_dict, user_item_time_dict, user_item_dict, user_time_dict
+
+
+@multitasking.task
+def recall(df_query, item_sim, user_item_time_dict, worker_id):
+    data_list = []
+
+    for user_id, item_id in tqdm(df_query.values):
+        rank = {}
+
+        item_list = user_item_dict[user_id]
+
+        interacted_items = user_item_dict[user_id]
+        interacted_items = interacted_items[::-1][:2]
+        #找出用户的最近两次点击事件
+
+        for loc, item in enumerate(interacted_items):
+            for relate_item, wij in sorted(item_sim[item].items(),
+                                           key=lambda d: d[1],
+                                           reverse=True)[0:200]:
+                if relate_item in item_list:
+                    continue
+                rank.setdefault(relate_item, 0)
+                rank[relate_item] += wij
+
+        sim_items = sorted(rank.items(), key=lambda d: d[1],
+                           reverse=True)[:100]
+        item_ids = [item[0] for item in sim_items]
+        item_sim_scores = [item[1] for item in sim_items]
+
+        df_temp = pd.DataFrame()
+        df_temp['article_id'] = item_ids
+        df_temp['sim_score'] = item_sim_scores
+        df_temp['user_id'] = user_id
+
+        if item_id == -1:
+            df_temp['label'] = np.nan
+        else:
+            df_temp['label'] = 0
+            df_temp.loc[df_temp['article_id'] == item_id, 'label'] = 1
+
+        df_temp = df_temp[['user_id', 'article_id', 'sim_score', 'label']]
+        df_temp['user_id'] = df_temp['user_id'].astype('int')
+        df_temp['article_id'] = df_temp['article_id'].astype('int')
+
+        data_list.append(df_temp)
+
+    df_data = pd.concat(data_list, sort=False)
+    print('df_data.head = ')
+    print(df_data.head())
+
+    os.makedirs('/home/xiaoguzai/数据/新闻推荐/user_data/tmp/old_itemcf', exist_ok=True)
+    df_data.to_pickle(f'/home/xiaoguzai/数据/新闻推荐/user_data/tmp/old_itemcf/recall_{worker_id}.pkl')
+
+
+if __name__ == '__main__':
+    if mode == 'valid':
+        df_click = pd.read_pickle('/home/xiaoguzai/数据/新闻推荐/user_data/data/offline/click.pkl')
+        df_query = pd.read_pickle('/home/xiaoguzai/数据/新闻推荐/user_data/data/offline/query.pkl')
+
+        os.makedirs('/home/xiaoguzai/数据/新闻推荐/user_data/sim/offline', exist_ok=True)
+        sim_pkl_file = '/home/xiaoguzai/数据/新闻推荐/user_data/sim/offline/old_itemcf_sim.pkl'
+    else:
+        df_click = pd.read_pickle('/home/xiaoguzai/数据/新闻推荐/user_data/sim/online/click.pkl')
+        df_query = pd.read_pickle('/home/xiaoguzai/数据/新闻推荐/user_data/sim/online/query.pkl')
+
+        os.makedirs('/home/xiaoguzai/数据/新闻推荐/user_data/sim/online', exist_ok=True)
+        sim_pkl_file = '/home/xiaoguzai/数据/新闻推荐/user_data/sim/online/itemcf_sim.pkl'
+
+    log.debug(f'df_click shape: {df_click.shape}')
+    log.debug(f'{df_click.head()}')
+
+    item_sim, user_item_time_dict, user_item_dict, user_time_dict = cal_sim(df_click)
+
+    f = open(sim_pkl_file, 'wb')
+    pickle.dump(item_sim, f)
+    f.close()
+
+    # 召回
+    n_split = max_threads
+    all_users = df_query['user_id'].unique()
+    shuffle(all_users)
+    total = len(all_users)
+    n_len = total // n_split
+
+    # 清空临时文件夹
+    r"""
+    for path, _, file_list in os.walk('/home/xiaoguzai/数据/新闻推荐/user_data/tmp/itemcf'):
+        for file_name in file_list:
+            os.remove(os.path.join(path, file_name))
+    """
+
+
+    #多路召回，debug的时候可以去除掉
+    for i in range(0, total, n_len):
+        part_users = all_users[i:i + n_len]
+        df_temp = df_query[df_query['user_id'].isin(part_users)]
+        recall(df_temp, item_sim, user_item_time_dict, i)
+
+
+
+    multitasking.wait_for_tasks()
+    log.info('合并任务')
+
+    df_data = pd.DataFrame()
+    for path, _, file_list in os.walk('/home/xiaoguzai/数据/新闻推荐/user_data/tmp/old_itemcf'):
+        for file_name in file_list:
+            df_temp = pd.read_pickle(os.path.join(path, file_name))
+            df_data = df_data.append(df_temp)
+
+    log.debug("before sort")
+    log.debug(df_data.head())
+
+    # 必须加，对其进行排序
+    df_data = df_data.sort_values(['user_id', 'sim_score'],
+                                  ascending=[True,
+                                             False]).reset_index(drop=True)
+    log.debug(f'df_data.head: {df_data.head()}')
+
+    # 计算召回指标
+    if mode == 'valid':
+        log.info(f'计算召回指标')
+
+        total = df_query[df_query['click_article_id'] != -1].user_id.nunique()
+
+        hitrate_5, mrr_5, hitrate_10, mrr_10, hitrate_20, mrr_20, hitrate_40, mrr_40, hitrate_50, mrr_50 = evaluate(
+            df_data[df_data['label'].notnull()], total)
+
+        log.debug(
+            f'itemcf: {hitrate_5}, {mrr_5}, {hitrate_10}, {mrr_10}, {hitrate_20}, {mrr_20}, {hitrate_40}, {mrr_40}, {hitrate_50}, {mrr_50}'
+        )
+    # 保存召回结果
+    if mode == 'valid':
+        df_data.to_pickle('/home/xiaoguzai/数据/新闻推荐/user_data/data/offline/recall_old_itemcf.pkl')
+    else:
+        df_data.to_pickle('/home/xiaoguzai/数据/新闻推荐/user_data/data/online/recall_old_itemcf.pkl')

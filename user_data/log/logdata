@@ -1,0 +1,10 @@
+2024-03-01 16:47:31,020 - /home/xiaoguzai/程序/2-tianchi-news-recommendation-rank2/code/recall_binetwork.py[line:40] - INFO: binetwork 召回，mode: valid
+2024-03-01 16:47:31,069 - /home/xiaoguzai/程序/2-tianchi-news-recommendation-rank2/code/recall_binetwork.py[line:131] - DEBUG: df_click shape: (1590375, 9)
+2024-03-01 16:47:31,075 - /home/xiaoguzai/程序/2-tianchi-news-recommendation-rank2/code/recall_binetwork.py[line:132] - DEBUG:    user_id  click_article_id  ...  click_region  click_referrer_type
+0        0             30760  ...            25                    2
+1        0            157507  ...            25                    2
+2        1            289197  ...            25                    6
+3        1             63746  ...            25                    6
+4        2             36162  ...            25                    2
+
+[5 rows x 9 columns]
